@@ -4,11 +4,17 @@ import com.android.build.gradle.internal.scope.TaskOutputHolder.AnchorOutputType
 import com.android.build.gradle.internal.scope.TaskOutputHolder.OutputType;
 import com.android.build.gradle.internal.scope.TaskOutputHolder.TaskOutputType;
 import com.android.build.gradle.internal.scope.VariantScope;
+import com.android.build.gradle.tasks.MergeResources;
+import com.android.ide.common.res2.ResourceSet;
+import com.android.sdklib.BuildToolInfo;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -78,12 +84,34 @@ class VariantScopeV30 {
     @NotNull
     static Map<String, Collection<File>> getAllArtifacts(@NotNull final VariantScope scope) {
         return Stream.concat(Arrays.stream(TaskOutputType.values()), Arrays.stream(AnchorOutputType.values()))
-                .collect(Collectors.toMap(OutputType::name, v -> getOutput(scope, v)));
+                .collect(Collectors.toMap(Enum::name, v -> getOutput(scope, v)));
     }
 
     @NotNull
     static Collection<File> getOutput(@NotNull final VariantScope scope, @NotNull final OutputType type) {
-        return scope.getOutput(type).getFiles();
+        try {
+            return scope.getOutput(type).getFiles();
+        } catch (final RuntimeException e) {
+            return Collections.emptySet();
+        }
+    }
+
+    @NotNull
+    static BuildToolInfo getBuildTools(@NotNull final VariantScope scope) {
+        return scope.getGlobalScope().getAndroidBuilder().getBuildToolInfo();
+    }
+
+    @NotNull
+    @SuppressWarnings("unchecked")
+    static Collection<File> getRawAndroidResources(@NotNull final VariantScope scope) {
+        try {
+            final Method computeResourceSetList = MergeResources.class.getDeclaredMethod("computeResourceSetList");
+            computeResourceSetList.setAccessible(true);
+            final List<ResourceSet> resources = (List<ResourceSet>) computeResourceSetList.invoke(scope.getVariantData().mergeResourcesTask);
+            return resources.stream().map(it -> it.getSourceFiles()).flatMap(Collection::stream).collect(Collectors.toSet());
+        } catch (final Throwable e) {
+            return Collections.emptySet();
+        }
     }
 
 }

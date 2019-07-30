@@ -5,14 +5,13 @@ import com.didiglobal.booster.kotlinx.asIterable
 import com.didiglobal.booster.kotlinx.execute
 import com.didiglobal.booster.kotlinx.file
 import com.didiglobal.booster.kotlinx.ifNotEmpty
-import com.didiglobal.booster.kotlinx.map
 import com.didiglobal.booster.kotlinx.touch
 import com.didiglobal.booster.transform.ArtifactManager.Companion.JAVAC
 import com.didiglobal.booster.transform.ArtifactManager.Companion.MERGED_RES
 import com.didiglobal.booster.transform.ArtifactManager.Companion.SYMBOL_LIST
 import com.didiglobal.booster.transform.TransformContext
 import com.didiglobal.booster.transform.asm.ClassTransformer
-import com.didiglobal.booster.util.FileFinder
+import com.didiglobal.booster.util.search
 import com.google.auto.service.AutoService
 import org.objectweb.asm.Opcodes.ACC_FINAL
 import org.objectweb.asm.Opcodes.ACC_STATIC
@@ -25,7 +24,6 @@ import java.io.File
 import java.io.PrintWriter
 
 internal const val R_STYLEABLE = "R\$styleable"
-internal const val R_STYLEABLE_CLASS = "$R_STYLEABLE.class"
 internal const val ANDROID_R = "android/R$"
 internal const val COM_ANDROID_INTERNAL_R = "com/android/internal/R$"
 
@@ -39,26 +37,34 @@ class ShrinkTransformer : ClassTransformer {
 
     private lateinit var appPackage: String
     private lateinit var appRStyleable: String
-    private lateinit var appRStyleableClass: String
     private lateinit var symbols: SymbolList
-    private lateinit var retainedSymbols: Set<String>
     private lateinit var ignores: Set<Wildcard>
     private lateinit var logger: PrintWriter
 
     override fun onPreTransform(context: TransformContext) {
-        this.appPackage = context.applicationId.replace('.', '/')
+        this.appPackage = context.originalApplicationId.replace('.', '/')
         this.logger = context.reportsDir.file(Build.ARTIFACT).file(context.name).file("report.txt").touch().printWriter()
         this.symbols = SymbolList.from(context.artifacts.get(SYMBOL_LIST).single())
         this.appRStyleable = "$appPackage/$R_STYLEABLE"
-        this.appRStyleableClass = "$appPackage/$R_STYLEABLE_CLASS"
         this.ignores = context.getProperty(PROPERTY_IGNORES)?.split(',')?.map { Wildcard(it) }?.toSet() ?: emptySet()
 
-        // Find symbols that should be retained
-        this.retainedSymbols = context.findRetainedSymbols()
-        if (this.retainedSymbols.isNotEmpty()) {
-            this.ignores = this.ignores.plus(setOf(Wildcard.valueOf("android/support/constraint/R\$id.class")))
+        val retainedSymbols: Set<String>
+        val classpath = context.compileClasspath.map { it.absolutePath }
+        if (classpath.any { it.contains(PREFIX_CONSTRAINT_LAYOUT) }) {
+            // Find symbols that should be retained
+            retainedSymbols = context.findRetainedSymbols()
+            if (retainedSymbols.isNotEmpty()) {
+                this.ignores += setOf(Wildcard.valueOf("android/support/constraint/R\$id"))
+            }
+        } else {
+            retainedSymbols = emptySet()
         }
 
+        if (classpath.any { it.contains(PREFIX_GREENDAO) }) {
+            this.ignores += Wildcard.valueOf(PATTERN_FIELD_TABLENAME)
+        }
+
+        logger.println(classpath.joinToString("\n  - ", "classpath:\n  - ", "\n"))
         logger.println("$PROPERTY_IGNORES=$ignores\n")
 
         retainedSymbols.ifNotEmpty { symbols ->
@@ -107,13 +113,13 @@ class ShrinkTransformer : ClassTransformer {
         return artifacts.get(JAVAC).map { classes ->
             val base = classes.toURI()
 
-            FileFinder(classes) { r ->
+            classes.search { r ->
                 r.name.startsWith("R") && r.name.endsWith(".class") && (r.name[1] == '$' || r.name.length == 7)
             }.map { r ->
-                Pair(r, base.relativize(r.toURI()).path)
+                r to base.relativize(r.toURI()).path.substringBeforeLast(".class")
             }
         }.flatten().filter {
-            it.second != appRStyleableClass // keep application's R$styleable.class
+            it.second != appRStyleable // keep application's R$styleable.class
         }.filter { pair ->
             !ignores.any { it.matches(pair.second) }
         }
@@ -123,7 +129,7 @@ class ShrinkTransformer : ClassTransformer {
         fields.map {
             it as FieldNode
         }.filter { field ->
-            !ignores.any { it.matches("$name.${field.name}${field.desc}") }
+            !ignores.any { it.matches("$name.${field.name}:${field.desc}") }
         }.filter {
             0 != (ACC_STATIC and it.access) && 0 != (ACC_FINAL and it.access) && it.value != null
         }.forEach {
@@ -133,7 +139,7 @@ class ShrinkTransformer : ClassTransformer {
     }
 
     private fun ClassNode.replaceSymbolReferenceWithConstant() {
-        this.methods.forEach { method ->
+        methods.forEach { method ->
             val insns = method.instructions.iterator().asIterable().filter {
                 it.opcode == GETSTATIC
             }.map {
@@ -144,7 +150,7 @@ class ShrinkTransformer : ClassTransformer {
                         && !(it.owner.startsWith(COM_ANDROID_INTERNAL_R) || it.owner.startsWith(ANDROID_R))
             }
 
-            val intFields = insns.filter { "I" == it.desc && !retainedSymbols.contains(it.name) }
+            val intFields = insns.filter { "I" == it.desc }
             val intArrayFields = insns.filter { "[I" == it.desc }
 
             // Replace int field with constant
@@ -154,7 +160,7 @@ class ShrinkTransformer : ClassTransformer {
                     method.instructions.insertBefore(field, LdcInsnNode(symbols.getInt(type, field.name)))
                     method.instructions.remove(field)
                 } catch (e: NullPointerException) {
-                    logger.println("Unresolvable symbol `R.$type.${field.name}` : ${this.name}.${method.name}${method.desc}")
+                    logger.println("Unresolvable symbol `R.$type.${field.name}` : $name.${method.name}${method.desc}")
                 }
             }
 
@@ -168,8 +174,8 @@ class ShrinkTransformer : ClassTransformer {
 }
 
 private fun FieldNode.valueAsString() = when {
-    this.value is String -> "\"${this.value}\""
-    else -> this.value.toString()
+    value is String -> "\"$value\""
+    else -> value.toString()
 }
 
 /**
@@ -186,3 +192,9 @@ private fun TransformContext.findRetainedSymbols(): Set<String> {
 private val PROPERTY_PREFIX = Build.ARTIFACT.replace('-', '.')
 
 private val PROPERTY_IGNORES = "$PROPERTY_PREFIX.ignores"
+
+private val PREFIX_CONSTRAINT_LAYOUT = "${File.separatorChar}com.android.support.constraint${File.separatorChar}constraint-layout"
+
+private val PREFIX_GREENDAO = "${File.separatorChar}org.greenrobot${File.separatorChar}greendao${File.separatorChar}"
+
+internal const val PATTERN_FIELD_TABLENAME = "*.TABLENAME:Ljava/lang/String;"

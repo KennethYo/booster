@@ -15,7 +15,6 @@ import com.android.build.gradle.internal.publishing.AndroidArtifacts.ArtifactSco
 import com.android.build.gradle.internal.publishing.AndroidArtifacts.ArtifactType.AAR
 import com.android.build.gradle.internal.publishing.AndroidArtifacts.ArtifactType.JAR
 import com.android.build.gradle.internal.publishing.AndroidArtifacts.ConsumedConfigType.RUNTIME_CLASSPATH
-import com.didiglobal.booster.kotlinx.execute
 import com.didiglobal.booster.kotlinx.ifNotEmpty
 import com.didiglobal.booster.transform.ArtifactManager
 import com.didiglobal.booster.transform.Klass
@@ -24,7 +23,7 @@ import com.didiglobal.booster.transform.TransformContext
 import com.didiglobal.booster.transform.TransformListener
 import com.didiglobal.booster.transform.Transformer
 import com.didiglobal.booster.transform.util.transform
-import com.didiglobal.booster.util.FileFinder
+import com.didiglobal.booster.util.search
 import java.io.File
 import java.net.URLClassLoader
 import java.util.ServiceLoader
@@ -54,6 +53,8 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
 
     override val executor = ForkJoinPool(Runtime.getRuntime().availableProcessors(), ForkJoinPool.defaultForkJoinWorkerThreadFactory, null, true)
 
+    override val bootClasspath = delegate.bootClasspath
+
     override val compileClasspath = delegate.compileClasspath
 
     override val runtimeClasspath = delegate.runtimeClasspath
@@ -63,6 +64,10 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
     override val klassPool = KlassPoolImpl(runtimeClasspath)
 
     override val applicationId = delegate.applicationId
+
+    override val originalApplicationId = delegate.originalApplicationId
+
+    override val isDebuggable = delegate.variant.buildType.isDebuggable
 
     override fun hasProperty(name: String): Boolean {
         return project.hasProperty(name)
@@ -100,8 +105,8 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
         ArtifactManager.JAVAC                         -> variant.scope.javac
         ArtifactManager.MERGED_ASSETS                 -> variant.scope.mergedAssets
         ArtifactManager.MERGED_RES                    -> variant.scope.mergedRes
-        ArtifactManager.MERGED_MANIFESTS              -> FileFinder(variant.scope.mergedManifests) { SdkConstants.FN_ANDROID_MANIFEST_XML == it.name }.execute()
-        ArtifactManager.PROCESSED_RES                 -> FileFinder(variant.scope.processedRes) { it.name.startsWith(SdkConstants.FN_RES_BASE) && it.name.endsWith(SdkConstants.EXT_RES) }.execute()
+        ArtifactManager.MERGED_MANIFESTS              -> variant.scope.mergedManifests.search { SdkConstants.FN_ANDROID_MANIFEST_XML == it.name }
+        ArtifactManager.PROCESSED_RES                 -> variant.scope.processedRes.search { it.name.startsWith(SdkConstants.FN_RES_BASE) && it.name.endsWith(SdkConstants.EXT_RES) }
         ArtifactManager.SYMBOL_LIST                   -> variant.scope.symbolList
         ArtifactManager.SYMBOL_LIST_WITH_PACKAGE_NAME -> variant.scope.symbolListWithPackageName
         else -> TODO("Unexpected type: $type")
@@ -110,11 +115,13 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
     internal fun doFullTransform() {
         this.inputs.parallelStream().forEach { input ->
             input.directoryInputs.parallelStream().forEach {
-                it.file.transform(outputProvider.getContentLocation(it.file.name, it.contentTypes, it.scopes, Format.DIRECTORY)) { bytecode ->
+                project.logger.info("Transforming ${it.file}")
+                it.file.transform(outputProvider.getContentLocation(it.name, it.contentTypes, it.scopes, Format.DIRECTORY)) { bytecode ->
                     bytecode.transform(this)
                 }
             }
             input.jarInputs.parallelStream().forEach {
+                project.logger.info("Transforming ${it.file}")
                 it.file.transform(outputProvider.getContentLocation(it.name, it.contentTypes, it.scopes, Format.JAR)) { bytecode ->
                     bytecode.transform(this)
                 }
@@ -130,6 +137,7 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
                     REMOVED -> jarInput.file.delete()
                     CHANGED, ADDED -> {
                         val root = outputProvider.getContentLocation(jarInput.name, jarInput.contentTypes, jarInput.scopes, Format.JAR)
+                        project.logger.info("Transforming ${jarInput.file}")
                         jarInput.file.transform(root) { bytecode ->
                             bytecode.transform(this)
                         }
@@ -145,6 +153,7 @@ internal class BoosterTransformInvocation(private val delegate: TransformInvocat
                             REMOVED -> file.delete()
                             ADDED, CHANGED -> {
                                 val root = outputProvider.getContentLocation(dirInput.name, dirInput.contentTypes, dirInput.scopes, Format.DIRECTORY)
+                                project.logger.info("Transforming $file")
                                 file.transform(File(root, base.relativize(file.toURI()).path)) { bytecode ->
                                     bytecode.transform(this)
                                 }

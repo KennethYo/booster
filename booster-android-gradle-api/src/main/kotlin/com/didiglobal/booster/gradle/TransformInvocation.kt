@@ -5,13 +5,8 @@ import com.android.build.gradle.AppExtension
 import com.android.build.gradle.BaseExtension
 import com.android.build.gradle.LibraryExtension
 import com.android.build.gradle.api.BaseVariant
-import com.didiglobal.booster.kotlinx.head
-import com.didiglobal.booster.kotlinx.map
-import com.didiglobal.booster.util.FileFinder
 import org.gradle.api.Project
 import org.gradle.api.internal.AbstractTask
-import org.objectweb.asm.ClassReader
-import org.objectweb.asm.tree.ClassNode
 import java.io.File
 
 /**
@@ -29,12 +24,15 @@ val TransformInvocation.project: Project
  */
 val TransformInvocation.variant: BaseVariant
     get() = project.getAndroid<BaseExtension>().let { android ->
-        when (android) {
-            is AppExtension -> return android.applicationVariants.single { it.name == this.context.variantName }
-            is LibraryExtension -> return android.libraryVariants.single { it.name == this.context.variantName }
+        return when (android) {
+            is AppExtension -> android.applicationVariants.single { it.name == this.context.variantName }
+            is LibraryExtension -> android.libraryVariants.single { it.name == this.context.variantName }
+            else -> TODO("variant not found")
         }
-        TODO("variant not found")
     }
+
+val TransformInvocation.bootClasspath: Collection<File>
+    get() = project.getAndroid<BaseExtension>().bootClasspath
 
 /**
  * Returns the compile classpath of this transform invocation
@@ -54,31 +52,16 @@ val TransformInvocation.compileClasspath: Collection<File>
  * @author johnsonlee
  */
 val TransformInvocation.runtimeClasspath: Collection<File>
-    get() = compileClasspath + project.getAndroid<BaseExtension>().bootClasspath
+    get() = compileClasspath + bootClasspath
 
 /**
  * Returns the application id
  */
 val TransformInvocation.applicationId: String
-    get() {
-        val packages = variant.scope.symbolListWithPackageName.filter {
-            it.length() > 0
-        }.map {
-            it.head()!!
-        }.toSet()
+    get() = variant.variantData.applicationId
 
-        return variant.scope.javac.map { classes ->
-            val base = classes.toURI()
-            FileFinder(classes) { file ->
-                file.name == "BuildConfig.class" && file.inputStream().use { bytecode ->
-                    ClassNode().also { klass ->
-                        ClassReader(bytecode).accept(klass, 0)
-                    }.fields.any {
-                        it.name == "APPLICATION_ID" && it.desc == "Ljava/lang/String;" && packages.contains(it.value)
-                    }
-                }
-            }.map {
-                base.relativize(it.toURI()).path.substringBeforeLast('/').replace('/', '.')
-            }.toSet()
-        }.flatten().single()
-    }
+/**
+ * Returns the original application ID before any overrides from flavors
+ */
+val TransformInvocation.originalApplicationId: String
+    get() = variant.variantData.variantConfiguration.originalApplicationId

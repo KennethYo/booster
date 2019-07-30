@@ -1,9 +1,9 @@
 package com.didiglobal.booster.transform.util
 
-import com.didiglobal.booster.kotlinx.forEach
 import com.didiglobal.booster.kotlinx.redirect
 import com.didiglobal.booster.kotlinx.touch
-import com.didiglobal.booster.util.FileFinder
+import com.didiglobal.booster.util.search
+import org.gradle.api.logging.Logging
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -11,6 +11,8 @@ import java.io.OutputStream
 import java.util.jar.JarEntry
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
+
+private val logger = Logging.getLogger("transform")
 
 /**
  * Transform this file or directory to the output by the specified transformer
@@ -22,7 +24,7 @@ fun File.transform(output: File, transformer: (ByteArray) -> ByteArray = { it ->
     when {
         isDirectory -> {
             val base = this.toURI()
-            FileFinder(this).forEach {
+            this.search().forEach {
                 it.transform(File(output, base.relativize(it.toURI()).path), transformer)
             }
         }
@@ -36,6 +38,7 @@ fun File.transform(output: File, transformer: (ByteArray) -> ByteArray = { it ->
                                 if (!entry.isDirectory) {
                                     when (entry.name.substringAfterLast('.', "")) {
                                         "class" -> jar.getInputStream(entry).use { src ->
+                                            logger.info("Transforming ${this.absolutePath}!/${entry.name}")
                                             src.transform(transformer).redirect(dest)
                                         }
                                         else -> jar.getInputStream(entry).use { src ->
@@ -48,6 +51,7 @@ fun File.transform(output: File, transformer: (ByteArray) -> ByteArray = { it ->
                     }
                 }
                 "class" -> inputStream().use {
+                    logger.info("Transforming ${this.absolutePath}")
                     it.transform(transformer).redirect(output)
                 }
                 else -> this.copyTo(output, true)

@@ -1,10 +1,10 @@
 package com.didiglobal.booster.transform.shrink
 
-import android.aapt.pb.internal.ResourcesInternal
-import com.android.aapt.Resources
 import com.didiglobal.booster.aapt2.BinaryParser
 import com.didiglobal.booster.aapt2.MAGIC
 import com.didiglobal.booster.aapt2.RES_FILE
+import com.didiglobal.booster.aapt2.Resources
+import com.didiglobal.booster.aapt2.ResourcesInternal
 import com.didiglobal.booster.kotlinx.stackTraceAsString
 import org.gradle.api.logging.Logging
 import java.io.File
@@ -111,8 +111,13 @@ internal fun Resources.XmlNode.findAllRetainedSymbols(): Collection<String> {
                 }
             }.attributeList?.forEach { attr ->
                 when (attr.name) {
-                    "constraint_referenced_ids" -> {
-                        addAll(attr.value.split(PATTERN_COMMA))
+                    "constraint_referenced_ids" -> addAll(attr.value.split(PATTERN_COMMA))
+                    else -> if (attr.name.startsWith("layout_constraint")) {
+                        addAll(attr.value.split(PATTERN_COMMA).filter {
+                            it != "parent"
+                        }.map {
+                            it.substringAfter('/')
+                        })
                     }
                 }
             }

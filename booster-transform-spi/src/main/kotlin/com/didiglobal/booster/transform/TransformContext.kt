@@ -41,6 +41,11 @@ interface TransformContext {
     val executor: ExecutorService
 
     /**
+     * The boot classpath
+     */
+    val bootClasspath: Collection<File>
+
+    /**
      * The compile classpath
      */
     val compileClasspath: Collection<File>
@@ -64,6 +69,16 @@ interface TransformContext {
      * The application identifier
      */
     val applicationId: String
+
+    /**
+     * The original application ID before any overrides from flavors
+     */
+    val originalApplicationId: String
+
+    /**
+     * The buildType is debuggable
+     */
+    val isDebuggable: Boolean
 
     /**
      * Check if has the specified property. Generally, the property is equivalent to project property
